@@ -10,7 +10,7 @@ include_directories(
 message("INFO ${OpenCV_INCLUDE_DIRS}")
 message("INFO ${PROJECT_INCLUDE_DIR}")
 
-add_executable(calibration main.cpp src/settings.cpp)
+add_executable(calibration main.cpp src/settings.cpp src/CameraCalib.cpp)
 add_executable(test test.cpp)
 
 target_include_directories(calibration PUBLIC ./include)

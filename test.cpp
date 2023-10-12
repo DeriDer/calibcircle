@@ -11,6 +11,7 @@
 #include <string>
 #include <ctime>
 #include <cstdio>
+#include "CameraCalib.h"
 using namespace cv;
 
 Mat resize_image(Mat& img)
