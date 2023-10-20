@@ -30,10 +30,12 @@ def read_XML(file):
     dist_coeffs_right = calibration_data.getNode("D2").mat()
     rotation_matrix = calibration_data.getNode("R").mat()
     translation_vector = calibration_data.getNode("T").mat()
+    E= calibration_data.getNode("E").mat()
+    F= calibration_data.getNode("F").mat()
 
     # 关闭文件
     calibration_data.release()
-    return camera_matrix_left,dist_coeffs_left,camera_matrix_right,dist_coeffs_right,rotation_matrix,translation_vector
+    return camera_matrix_left,dist_coeffs_left,camera_matrix_right,dist_coeffs_right,rotation_matrix,translation_vector,E,F
 
 def reprojection_error(world_points,rotation_matrix, translation_vector, camera_matrix_left, dist_coeffs_left, imagepoints_left):
     # 计算投影误差
@@ -256,7 +258,7 @@ square_size = 10.0
 # cali!!!!!!
 #world_points,rotation_matrix, translation_vector,camera_matrix_left, dist_coeffs_left, imagepoints_right = calibrate_camera_stereo(image_folder_path,pattern_size,square_size)
 
-camera_matrix_left,dist_coeffs_left,camera_matrix_right,dist_coeffs_right,rotation_matrix,translation_vector =read_XML('stereo_calibration_data.xml')
+camera_matrix_left,dist_coeffs_left,camera_matrix_right,dist_coeffs_right,rotation_matrix,translation_vector,E, F =read_XML('stereo_calibration_data.xml')
 
 
 # 计算矫正映射
@@ -267,8 +269,8 @@ R1, R2, P1, P2, Q, _, _ = cv2.stereoRectify(camera_matrix_left, dist_coeffs_left
 map1_left, map2_left = cv2.initUndistortRectifyMap(camera_matrix_left, dist_coeffs_left, R1, P1, image_size, cv2.CV_16SC2)
 map1_right, map2_right = cv2.initUndistortRectifyMap(camera_matrix_right, dist_coeffs_right, R2, P2, image_size, cv2.CV_16SC2)
 # 加载左右图像
-image_left = cv2.imread('./gray/gray_Left9.bmp', 0)  # 转为灰度图像
-image_right = cv2.imread('./gray/gray_Right9.bmp', 0)  # 转为灰度图像
+image_left = cv2.imread('./gray_Left9.bmp', 0)  # 转为灰度图像
+image_right = cv2.imread('./gray_Right9.bmp', 0)  # 转为灰度图像
 image_left,_ = resize_image(image_left)
 image_right,_ = resize_image(image_right)
 
@@ -277,12 +279,57 @@ rectified_left = cv2.remap(image_left, map1_left, map2_left, interpolation=cv2.I
 
 # 对右图像进行矫正
 rectified_right = cv2.remap(image_right, map1_right, map2_right, interpolation=cv2.INTER_LINEAR)
+
 rectimage = cv2.hconcat([rectified_left, rectified_right])
 rectimage = cv2.cvtColor(rectimage, cv2.COLOR_GRAY2BGR)
 for i in range(10):
     line_y = i * int(rectimage.shape[0]/10)
     cv2.line(rectimage, (0, line_y), (rectimage.shape[1]-1, line_y), (0, 0, 255), 1)
 cv2.imwrite("output.jpg",rectimage)
+overlap = np.uint8((rectified_left > 0) & (rectified_right > 0))
+# 仅显示重叠区域
+result_left = cv2.bitwise_and(rectified_left, rectified_left, mask=overlap)
+result_right = cv2.bitwise_and(rectified_right, rectified_left, mask=overlap)
+#ol = cv2.hconcat([result_left, result_right])
+cv2.imshow('Overlap', result_right)
+img2 = rectified_left[overlap]
+cv2.waitKey(5000)
+#投影
+# 1. 去畸变
+undistorted_point = cv2.undistortPoints(np.array([[[2800.0, 2200.0]]]), camera_matrix_left, dist_coeffs_left, None, camera_matrix_left)
+
+# 2. 从像素坐标到相机坐标
+normalized_point = np.array([undistorted_point[0][0][0], undistorted_point[0][0][1], 1.0]).reshape(3, 1)
+
+# 3. 从左相机坐标系到右相机坐标系
+R = np.array(rotation_matrix).reshape(3, 3)
+T = np.array(translation_vector).reshape(3, 1)
+point_in_right_camera = np.dot(R, normalized_point) + T
+
+# 4. 从3D点到2D投影
+projected_point = np.dot(camera_matrix_right, point_in_right_camera)
+projected_point /= projected_point[2, 0]
+
+print(projected_point[:2])
+
+point_left = np.array([100, 100])
+
+# 去畸变
+undistorted_point_left = cv2.undistortPoints(np.array([[point_left]], dtype=np.float32), camera_matrix_left, dist_coeffs_left, None, camera_matrix_left)
+
+# 反投影到3D空间。这里我们假设深度为1，但你可以根据需要更改这个值
+z = 1
+X = z * (undistorted_point_left[0,0,0] - camera_matrix_left[0,2]) / camera_matrix_left[0,0]
+Y = z * (undistorted_point_left[0,0,1] - camera_matrix_left[1,2]) / camera_matrix_left[1,1]
+point_3D = np.array([[X, Y, z]])
+
+# 将3D点从左摄像机坐标系转换到右摄像机坐标系
+point_3D_right_cam = np.dot(rotation_matrix, point_3D.T) + translation_vector
+
+# 使用右摄像机的内部参数矩阵将3D点投影到右图上
+point_right = cv2.projectPoints(point_3D_right_cam.T, np.eye(3), np.zeros((3,1)), camera_matrix_right, dist_coeffs_right)[0]
+
+print("Projected point in right image: ", point_right[0,0])
 
 rms = reprojection_error(world_points,rotation_matrix, translation_vector,camera_matrix_left, dist_coeffs_left, imagepoints_right)
 print(rms)
@@ -292,3 +339,63 @@ flags = cv2.CALIB_FIX_INTRINSIC  # 设置标定标志，固定内参
 criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
 stereo_criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-5)  # 可选的双目标定迭代终止条件
 
+
+
+
+#LAB
+def histogram_matching(source, template):
+    # Convert the images from RGB to L*a*b* space
+    source_lab = cv2.cvtColor(source, cv2.COLOR_BGR2Lab)
+    template_lab = cv2.cvtColor(template, cv2.COLOR_BGR2Lab)
+
+    # Split the LAB images into L, A and B channels
+    l_s, a_s, b_s = cv2.split(source_lab)
+    l_t, a_t, b_t = cv2.split(template_lab)
+
+    # Match the L channel histograms
+    l_s_matched = cv2.equalizeHist(l_s, l_t)
+
+    # Merge the adjusted L channel with the A and B channels from source image
+    matched_lab = cv2.merge((l_s_matched, a_s, b_s))
+    
+    # Convert back to RGB space
+    matched_img = cv2.cvtColor(matched_lab, cv2.COLOR_Lab2BGR)
+    return matched_img
+
+source = cv2.imread('source.jpg')
+template = cv2.imread('template.jpg')
+
+matched_img = histogram_matching(source, template)
+cv2.imshow('Matched Image', matched_img)
+cv2.waitKey(0)
+cv2.destroyAllWindows()
+
+import cv2
+import numpy as np
+
+def color_transfer(source, template):
+    # Convert images from RGB to float32
+    source = np.float32(source)
+    template = np.float32(template)
+    
+    # Calculate means and standard deviations for each channel in source and template images
+    mean_src = np.mean(source, axis=(0,1))
+    std_src = np.std(source, axis=(0,1))
+    
+    mean_tpl = np.mean(template, axis=(0,1))
+    std_tpl = np.std(template, axis=(0,1))
+    
+    # Adjust the source image using the formula: (pixel - mean_src) * (std_tpl/std_src) + mean_tpl
+    adjusted = (source - mean_src) * (std_tpl / std_src) + mean_tpl
+    
+    # Clip the values to be in [0, 255] range and convert back to uint8
+    adjusted = np.clip(adjusted, 0, 255).astype(np.uint8)
+    return adjusted
+
+source = cv2.imread('source.jpg')
+template = cv2.imread('template.jpg')
+
+adjusted_img = color_transfer(source, template)
+cv2.imshow('Color Adjusted Image', adjusted_img)
+cv2.waitKey(0)
+cv2.destroyAllWindows()
